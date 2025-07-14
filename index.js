@@ -90,6 +90,25 @@ async function run() {
             }
         });
 
+
+        // update medicine by id
+        app.put("/api/medicines/:id", async (req, res) => {
+            const id = req.params.id;
+            const updatedData = req.body;
+            const medicineID = new ObjectId(id);
+
+            const result = await medicinesCollection.updateOne(
+                { _id: medicineID },
+                { $set: updatedData }
+            );
+
+            if (result.modifiedCount > 0) {
+                res.send({ message: "Medicine updated successfully" });
+            } else {
+                res.status(404).send({ message: "Medicine not found" });
+            }
+        });
+
         // Start the server
         app.listen(port, () => {
             console.log(`Server running at http://localhost:${port}`);
