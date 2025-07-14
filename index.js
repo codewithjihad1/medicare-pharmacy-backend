@@ -90,6 +90,12 @@ async function run() {
             }
         });
 
+        // get medicine by banner status
+        app.get("/api/medicines/banner", async (req, res) => {
+            const query = { isInBanner: true };
+            const medicines = await medicinesCollection.find(query).toArray();
+            res.send(medicines);
+        });
 
         // update medicine by id
         app.put("/api/medicines/:id", async (req, res) => {
