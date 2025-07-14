@@ -17,12 +17,12 @@ const mongoURI = `mongodb+srv://${process.env.MONGODB_USER}:${process.env.MONGOD
 // mongodb client
 const client = new MongoClient(mongoURI);
 
-
 async function run() {
     try {
         const db = client.db("medicineShop");
         const usersCollection = db.collection("users");
         const medicinesCollection = db.collection("medicines");
+        const categoriesCollection = db.collection("categories");
 
         // post user data
         app.post("/api/users", async (req, res) => {
@@ -35,7 +35,7 @@ async function run() {
             }
             // Insert new user
             user.createAt = new Date().toISOString();
-            user.role = user.role || "customer"; 
+            user.role = user.role || "customer";
             const result = await usersCollection.insertOne(user);
             res.status(201).send(result);
         });
@@ -62,6 +62,12 @@ async function run() {
         app.get("/api/medicines", async (req, res) => {
             const result = await medicinesCollection.find({}).toArray();
             res.send(result);
+        });
+
+        // get all categories
+        app.get("/api/categories", async (req, res) => {
+            const categories = await categoriesCollection.find({}).toArray();
+            res.send(categories);
         });
 
         // Start the server
