@@ -22,6 +22,7 @@ async function run() {
     try {
         const db = client.db("medicineShop");
         const usersCollection = db.collection("users");
+        const medicinesCollection = db.collection("medicines");
 
         // post user data
         app.post("/api/users", async (req, res) => {
@@ -57,6 +58,11 @@ async function run() {
             }
         });
 
+        // get all medicines
+        app.get("/api/medicines", async (req, res) => {
+            const result = await medicinesCollection.find({}).toArray();
+            res.send(result);
+        });
 
         // Start the server
         app.listen(port, () => {
