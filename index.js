@@ -70,6 +70,26 @@ async function run() {
             res.send(categories);
         });
 
+        // get medicines by category
+        app.get("/api/medicines/category/:category", async (req, res) => {
+            const category = req.params.category;
+            const query = { category: category };
+            const medicines = await medicinesCollection.find(query).toArray();
+            res.send(medicines);
+        });
+
+        // get single category by category name
+        app.get("/api/categories/:categoryName", async (req, res) => {
+            const categoryName = req.params.categoryName;
+            const query = { slug: categoryName };
+            const category = await categoriesCollection.findOne(query);
+            if (category) {
+                res.send(category);
+            } else {
+                res.status(404).send({ message: "Category not found" });
+            }
+        });
+
         // Start the server
         app.listen(port, () => {
             console.log(`Server running at http://localhost:${port}`);
