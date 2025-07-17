@@ -23,6 +23,7 @@ async function run() {
         const usersCollection = db.collection("users");
         const medicinesCollection = db.collection("medicines");
         const categoriesCollection = db.collection("categories");
+        const healthBlogsCollection = db.collection("health-blogs");
 
         // post user data
         app.post("/api/users", async (req, res) => {
@@ -66,7 +67,10 @@ async function run() {
 
         // get all categories
         app.get("/api/categories", async (req, res) => {
-            const categories = await categoriesCollection.find({}).toArray();
+            const categories = await categoriesCollection
+                .find({})
+                .sort({ medicineCount: -1 })
+                .toArray();
             res.send(categories);
         });
 
@@ -95,6 +99,26 @@ async function run() {
             const query = { isInBanner: true };
             const medicines = await medicinesCollection.find(query).toArray();
             res.send(medicines);
+        });
+
+        // get discount products
+        app.get("/api/discount-products", async (req, res) => {
+            const query = { discount: { $gt: 0 } };
+            const discountProducts = await medicinesCollection
+                .find(query)
+                .sort({ discount: -1 })
+                .limit(10)
+                .toArray();
+            res.send(discountProducts);
+        });
+
+        // get health blogs
+        app.get("/api/health-blogs", async (req, res) => {
+            const blogs = await healthBlogsCollection
+                .find({})
+                .sort({ createdAt: -1 })
+                .toArray();
+            res.send(blogs);
         });
 
         // update medicine by id
