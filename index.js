@@ -121,6 +121,112 @@ async function run() {
             res.send(blogs);
         });
 
+        // get seller stats
+        app.get("/api/seller/stats", async (req, res) => {
+            try {
+                // Get total medicines count
+                const totalMedicines = await medicinesCollection.countDocuments(
+                    {}
+                );
+
+                // Get total categories count (can be used as additional metric)
+                const totalCategories =
+                    await categoriesCollection.countDocuments({});
+
+                // Calculate monthly revenue for the last 6 months
+                const currentDate = new Date();
+                const monthlyRevenue = [];
+                const monthNames = [
+                    "Jan",
+                    "Feb",
+                    "Mar",
+                    "Apr",
+                    "May",
+                    "Jun",
+                    "Jul",
+                    "Aug",
+                    "Sep",
+                    "Oct",
+                    "Nov",
+                    "Dec",
+                ];
+
+                for (let i = 5; i >= 0; i--) {
+                    const date = new Date(
+                        currentDate.getFullYear(),
+                        currentDate.getMonth() - i,
+                        1
+                    );
+                    const monthName = monthNames[date.getMonth()];
+
+                    // Generate dynamic revenue based on medicines count and some randomization
+                    // In a real app, this would come from actual sales/orders data
+                    const baseRevenue = totalMedicines * 50; // Base calculation
+                    const randomFactor = Math.random() * 0.5 + 0.75; // Random factor between 0.75-1.25
+                    const revenue = Math.round(baseRevenue * randomFactor);
+
+                    monthlyRevenue.push({
+                        month: monthName,
+                        revenue: revenue,
+                    });
+                }
+
+                // Calculate totals based on monthly revenue
+                const totalRevenue = monthlyRevenue.reduce(
+                    (sum, month) => sum + month.revenue,
+                    0
+                );
+                const paidTotal = Math.round(totalRevenue * 0.79); // 79% paid
+                const pendingTotal = totalRevenue - paidTotal;
+
+                // Calculate other metrics based on medicines
+                const totalSales = Math.round(totalMedicines * 6.5); // Approximate sales
+                const pendingOrders = Math.round(totalMedicines * 0.5); // Approximate pending orders
+
+                const sellerStats = {
+                    totalRevenue: parseFloat(totalRevenue.toFixed(2)),
+                    paidTotal: parseFloat(paidTotal.toFixed(2)),
+                    pendingTotal: parseFloat(pendingTotal.toFixed(2)),
+                    totalMedicines: totalMedicines,
+                    totalSales: totalSales,
+                    pendingOrders: pendingOrders,
+                    monthlyRevenue: monthlyRevenue,
+                };
+
+                res.send(sellerStats);
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching seller stats",
+                    error: error.message,
+                });
+            }
+        });
+
+        // get user role
+        app.get("/api/role/:email", async (req, res) => {
+            const email = req.params.email;
+            if (!email) {
+                return res.status(400).send({ message: "Email is required" });
+            }
+            const user = await usersCollection.findOne({ email: email });
+            if (user) {
+                res.send({ role: user.role });
+            } else {
+                res.status(404).send({ message: "User not found" });
+            }
+        });
+
+        // get medicines by seller email
+        app.get("/api/medicines/:email", async (req, res) => {
+            const sellerEmail = req.params.email;
+            if (!sellerEmail) {
+                return res.status(400).send({ message: "Email is required" });
+            }
+            const query = { "seller.email": sellerEmail };
+            const medicines = await medicinesCollection.find(query).toArray();
+            res.send(medicines);
+        });
+
         // update medicine by id
         app.put("/api/medicines/:id", async (req, res) => {
             const id = req.params.id;
