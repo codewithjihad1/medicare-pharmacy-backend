@@ -1,8 +1,14 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 const { MongoClient, ObjectId } = require("mongodb");
+const {
+    verifyFirebaseToken,
+    verifyTokenEmail,
+} = require("./middlewares/middlewares");
+
 const port = 5000;
 
 const app = express();
@@ -25,6 +31,7 @@ async function run() {
         const categoriesCollection = db.collection("categories");
         const healthBlogsCollection = db.collection("health-blogs");
         const companiesCollection = db.collection("companies");
+        const ordersCollection = db.collection("orders");
 
         // post user data
         app.post("/api/users", async (req, res) => {
@@ -49,16 +56,21 @@ async function run() {
         });
 
         // get user by email
-        app.get("/api/users/:email", async (req, res) => {
-            const email = req.params.email;
-            const query = { email: email };
-            const user = await usersCollection.findOne(query);
-            if (user) {
-                res.send(user);
-            } else {
-                res.status(404).send({ message: "User not found" });
+        app.get(
+            "/api/users/:email",
+            verifyFirebaseToken,
+            verifyTokenEmail,
+            async (req, res) => {
+                const email = req.params.email;
+                const query = { email: email };
+                const user = await usersCollection.findOne(query);
+                if (user) {
+                    res.send(user);
+                } else {
+                    res.status(404).send({ message: "User not found" });
+                }
             }
-        });
+        );
 
         // get all medicines
         app.get("/api/medicines", async (req, res) => {
@@ -234,19 +246,151 @@ async function run() {
             res.send(companies);
         });
 
+        // create payment intent
+        app.post("/api/create-payment-intent", async (req, res) => {
+            try {
+                const {
+                    amount,
+                    currency = "usd",
+                    customerInfo,
+                    cartItems,
+                } = req.body;
 
+                // Validate required fields
+                if (!amount || amount <= 0) {
+                    return res
+                        .status(400)
+                        .send({ message: "Valid amount is required" });
+                }
+
+                // Calculate the amount in cents (Stripe expects amount in smallest currency unit)
+                const amountInCents = Math.round(amount * 100);
+
+                // Create a PaymentIntent with the order amount and currency
+                const paymentIntent = await stripe.paymentIntents.create({
+                    amount: amountInCents,
+                    currency: currency,
+                    metadata: {
+                        customerEmail: customerInfo?.email || "",
+                        customerName: customerInfo?.fullName || "",
+                        itemCount: cartItems?.length || 0,
+                        orderType: "medicine_purchase",
+                    },
+                    automatic_payment_methods: {
+                        enabled: true,
+                    },
+                });
+
+                res.send({
+                    clientSecret: paymentIntent.client_secret,
+                    paymentIntentId: paymentIntent.id,
+                });
+            } catch (error) {
+                console.error("Error creating payment intent:", error);
+                res.status(500).send({
+                    message: "Error creating payment intent",
+                    error: error.message,
+                });
+            }
+        });
+
+        // confirm payment and create order
+        app.post("/api/confirm-payment", async (req, res) => {
+            try {
+                const { paymentIntentId, customerInfo, cartItems, orderTotal } =
+                    req.body;
+
+                // Verify payment intent with Stripe
+                const paymentIntent = await stripe.paymentIntents.retrieve(
+                    paymentIntentId
+                );
+
+                if (paymentIntent.status !== "succeeded") {
+                    return res
+                        .status(400)
+                        .send({ message: "Payment not completed" });
+                }
+
+                // Create order in database
+                const order = {
+                    paymentIntentId: paymentIntentId,
+                    customerInfo: customerInfo,
+                    items: cartItems,
+                    orderTotal: orderTotal,
+                    paymentStatus: "paid",
+                    orderStatus: "confirmed",
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                };
+
+                const result = await ordersCollection.insertOne(order);
+
+                res.status(201).send({
+                    message: "Order created successfully",
+                    orderId: result.insertedId,
+                    order: order,
+                });
+            } catch (error) {
+                console.error("Error confirming payment:", error);
+                res.status(500).send({
+                    message: "Error confirming payment",
+                    error: error.message,
+                });
+            }
+        });
+
+        // get orders by customer email
+        app.get(
+            "/api/orders/:email",
+            verifyFirebaseToken,
+            verifyTokenEmail,
+            async (req, res) => {
+                try {
+                    const email = req.params.email;
+                    const query = { "customerInfo.email": email };
+                    const orders = await ordersCollection
+                        .find(query)
+                        .sort({ createdAt: -1 })
+                        .toArray();
+                    res.send(orders);
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error fetching orders",
+                        error: error.message,
+                    });
+                }
+            }
+        );
+
+        // get all orders (admin only)
+        app.get("/api/orders", async (req, res) => {
+            try {
+                const orders = await ordersCollection
+                    .find({})
+                    .sort({ createdAt: -1 })
+                    .toArray();
+                res.send(orders);
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching orders",
+                    error: error.message,
+                });
+            }
+        });
 
         // add new medicine
         app.post("/api/medicines", async (req, res) => {
             const medicine = req.body;
             if (!medicine.name || !medicine.pricePerUnit) {
-                return res.status(400).send({ message: "Name and price are required" });
+                return res
+                    .status(400)
+                    .send({ message: "Name and price are required" });
             }
             medicine.createAt = new Date().toISOString();
             const result = await medicinesCollection.insertOne(medicine);
             res.status(201).send(result);
         });
-        
+
         // update medicine by id
         app.put("/api/medicines/:id", async (req, res) => {
             const id = req.params.id;

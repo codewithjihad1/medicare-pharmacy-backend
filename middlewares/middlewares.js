@@ -27,7 +27,7 @@ const verifyFirebaseToken = async (req, res, next) => {
 
 // verify user email middleware
 const verifyTokenEmail = async (req, res, next) => {
-    const email = req.query.userEmail;
+    const email = req.query.email || req.params.email;
 
     if (email !== req.decoded.email) {
         return res.status(403).send({ error: "Forbidden" });
