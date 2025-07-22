@@ -386,6 +386,10 @@ async function run() {
                     .status(400)
                     .send({ message: "Name and price are required" });
             }
+            medicine.discountPrice = medicine.pricePerUnit - (medicine.pricePerUnit * (medicine.discount / 100));
+            medicine.reviews = 0;
+            medicine.rating = 0;
+            medicine.inStock = medicine.stockQuantity > 0;
             medicine.createAt = new Date().toISOString();
             const result = await medicinesCollection.insertOne(medicine);
             res.status(201).send(result);
@@ -405,6 +409,20 @@ async function run() {
 
             if (result.modifiedCount > 0) {
                 res.send({ message: "Medicine updated successfully" });
+            } else {
+                res.status(404).send({ message: "Medicine not found" });
+            }
+        });
+
+
+        // delete medicine by id
+        app.delete("/api/medicines/:id", async (req, res) => {
+            const id = req.params.id;
+            const medicineID = new ObjectId(id);
+            const result = await medicinesCollection.deleteOne({ _id: medicineID });
+
+            if (result.deletedCount > 0) {
+                res.send({ message: "Medicine deleted successfully" });
             } else {
                 res.status(404).send({ message: "Medicine not found" });
             }
