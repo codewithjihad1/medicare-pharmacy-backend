@@ -24,6 +24,7 @@ async function run() {
         const medicinesCollection = db.collection("medicines");
         const categoriesCollection = db.collection("categories");
         const healthBlogsCollection = db.collection("health-blogs");
+        const companiesCollection = db.collection("companies");
 
         // post user data
         app.post("/api/users", async (req, res) => {
@@ -227,10 +228,30 @@ async function run() {
             res.send(medicines);
         });
 
+        // get companies info
+        app.get("/api/companies", async (req, res) => {
+            const companies = await companiesCollection.find({}).toArray();
+            res.send(companies);
+        });
+
+
+
+        // add new medicine
+        app.post("/api/medicines", async (req, res) => {
+            const medicine = req.body;
+            if (!medicine.name || !medicine.pricePerUnit) {
+                return res.status(400).send({ message: "Name and price are required" });
+            }
+            medicine.createAt = new Date().toISOString();
+            const result = await medicinesCollection.insertOne(medicine);
+            res.status(201).send(result);
+        });
+        
         // update medicine by id
         app.put("/api/medicines/:id", async (req, res) => {
             const id = req.params.id;
             const updatedData = req.body;
+            delete updatedData._id; // Remove _id to avoid conflict
             const medicineID = new ObjectId(id);
 
             const result = await medicinesCollection.updateOne(
