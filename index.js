@@ -32,6 +32,7 @@ async function run() {
         const healthBlogsCollection = db.collection("health-blogs");
         const companiesCollection = db.collection("companies");
         const ordersCollection = db.collection("orders");
+        const advertiseRequestsCollection = db.collection("advertise-requests");
 
         // post user data
         app.post("/api/users", async (req, res) => {
@@ -386,7 +387,9 @@ async function run() {
                     .status(400)
                     .send({ message: "Name and price are required" });
             }
-            medicine.discountPrice = medicine.pricePerUnit - (medicine.pricePerUnit * (medicine.discount / 100));
+            medicine.discountPrice =
+                medicine.pricePerUnit -
+                medicine.pricePerUnit * (medicine.discount / 100);
             medicine.reviews = 0;
             medicine.rating = 0;
             medicine.inStock = medicine.stockQuantity > 0;
@@ -414,17 +417,384 @@ async function run() {
             }
         });
 
-
         // delete medicine by id
         app.delete("/api/medicines/:id", async (req, res) => {
             const id = req.params.id;
             const medicineID = new ObjectId(id);
-            const result = await medicinesCollection.deleteOne({ _id: medicineID });
+            const result = await medicinesCollection.deleteOne({
+                _id: medicineID,
+            });
 
             if (result.deletedCount > 0) {
                 res.send({ message: "Medicine deleted successfully" });
             } else {
                 res.status(404).send({ message: "Medicine not found" });
+            }
+        });
+
+        // =================== ADVERTISEMENT REQUEST ENDPOINTS ===================
+
+        // get advertisement requests by seller email
+        app.get("/api/advertise-requests/:email", async (req, res) => {
+            try {
+                const sellerEmail = req.params.email;
+                if (!sellerEmail) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
+                }
+                const query = { sellerEmail: sellerEmail };
+                const requests = await advertiseRequestsCollection
+                    .find(query)
+                    .sort({ submittedAt: -1 })
+                    .toArray();
+                res.send(requests);
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching advertisement requests",
+                    error: error.message,
+                });
+            }
+        });
+
+        // create new advertisement request
+        app.post("/api/advertise-requests", async (req, res) => {
+            try {
+                const request = req.body;
+
+                // Validate required fields
+                if (
+                    !request.medicineId ||
+                    !request.title ||
+                    !request.sellerEmail
+                ) {
+                    return res.status(400).send({
+                        message:
+                            "Medicine ID, title, and seller email are required",
+                    });
+                }
+
+                // Set default values
+                request.submittedAt = new Date().toISOString();
+                request.status = request.status || "pending";
+                request.clicks = request.clicks || 0;
+                request.impressions = request.impressions || 0;
+                request.conversions = request.conversions || 0;
+                request.cost = request.cost || 0;
+
+                const result = await advertiseRequestsCollection.insertOne(
+                    request
+                );
+                res.status(201).send({
+                    message: "Advertisement request created successfully",
+                    requestId: result.insertedId,
+                });
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error creating advertisement request",
+                    error: error.message,
+                });
+            }
+        });
+
+        // update advertisement request by id
+        app.put("/api/advertise-requests/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                const updatedData = req.body;
+                delete updatedData._id; // Remove _id to avoid conflict
+
+                const requestID = new ObjectId(id);
+                updatedData.updatedAt = new Date().toISOString();
+
+                const result = await advertiseRequestsCollection.updateOne(
+                    { _id: requestID },
+                    { $set: updatedData }
+                );
+
+                if (result.modifiedCount > 0) {
+                    res.send({
+                        message: "Advertisement request updated successfully",
+                    });
+                } else {
+                    res.status(404).send({
+                        message: "Advertisement request not found",
+                    });
+                }
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error updating advertisement request",
+                    error: error.message,
+                });
+            }
+        });
+
+        // delete advertisement request by id
+        app.delete("/api/advertise-requests/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                const requestID = new ObjectId(id);
+
+                const result = await advertiseRequestsCollection.deleteOne({
+                    _id: requestID,
+                });
+
+                if (result.deletedCount > 0) {
+                    res.send({
+                        message: "Advertisement request deleted successfully",
+                    });
+                } else {
+                    res.status(404).send({
+                        message: "Advertisement request not found",
+                    });
+                }
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error deleting advertisement request",
+                    error: error.message,
+                });
+            }
+        });
+
+        // get all advertisement requests (admin only)
+        app.get("/api/advertise-requests", async (req, res) => {
+            try {
+                const requests = await advertiseRequestsCollection
+                    .find({})
+                    .sort({ submittedAt: -1 })
+                    .toArray();
+                res.send(requests);
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching advertisement requests",
+                    error: error.message,
+                });
+            }
+        });
+
+        // update advertisement request status (admin only)
+        app.patch("/api/advertise-requests/:id/status", async (req, res) => {
+            try {
+                const id = req.params.id;
+                const { status, adminNote } = req.body;
+
+                if (!status) {
+                    return res
+                        .status(400)
+                        .send({ message: "Status is required" });
+                }
+
+                const requestID = new ObjectId(id);
+                const updateData = {
+                    status: status,
+                    reviewedAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                };
+
+                if (adminNote) {
+                    updateData.adminNote = adminNote;
+                }
+
+                const result = await advertiseRequestsCollection.updateOne(
+                    { _id: requestID },
+                    { $set: updateData }
+                );
+
+                if (result.modifiedCount > 0) {
+                    res.send({
+                        message:
+                            "Advertisement request status updated successfully",
+                    });
+                } else {
+                    res.status(404).send({
+                        message: "Advertisement request not found",
+                    });
+                }
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error updating advertisement request status",
+                    error: error.message,
+                });
+            }
+        });
+
+        // get approved/active advertisement requests for slider
+        app.get("/api/advertise-requests/active/slider", async (req, res) => {
+            try {
+                const query = {
+                    status: { $in: ["approved", "active"] },
+                    startDate: { $lte: new Date().toISOString().split("T")[0] },
+                    endDate: { $gte: new Date().toISOString().split("T")[0] },
+                };
+
+                const activeAds = await advertiseRequestsCollection
+                    .find(query)
+                    .sort({ submittedAt: -1 })
+                    .toArray();
+
+                res.send(activeAds);
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching active advertisements",
+                    error: error.message,
+                });
+            }
+        });
+
+        // =================== SELLER PAYMENT HISTORY ENDPOINTS ===================
+
+        // get payment history for seller's medicines
+        app.get("/api/seller/payments/:email", async (req, res) => {
+            try {
+                const sellerEmail = req.params.email;
+                if (!sellerEmail) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
+                }
+
+                // Get seller's medicines first
+                const sellerMedicines = await medicinesCollection
+                    .find({ "seller.email": sellerEmail })
+                    .toArray();
+
+                const medicineIds = sellerMedicines.map((med) =>
+                    med._id.toString()
+                );
+
+                // Get all orders (both paid and pending)
+                const allOrders = await ordersCollection
+                    .find({})
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                // Filter orders that contain seller's medicines and calculate payments
+                const sellerPayments = [];
+
+                allOrders.forEach((order) => {
+                    const sellerItems =
+                        order.items?.filter(
+                            (item) =>
+                                medicineIds.includes(
+                                    item.medicineId?.toString()
+                                ) || medicineIds.includes(item._id?.toString())
+                        ) || [];
+
+                    if (sellerItems.length > 0) {
+                        const totalSellerAmount = sellerItems.reduce(
+                            (sum, item) => sum + item.price * item.quantity,
+                            0
+                        );
+                        const commission = totalSellerAmount * 0.1; // 10% platform commission
+                        const netAmount = totalSellerAmount - commission;
+
+                        // Determine payment status
+                        let paymentStatus = "pending"; // default
+                        if (order.paymentStatus === "paid") {
+                            paymentStatus = "completed";
+                        } else if (
+                            order.orderStatus === "cancelled" ||
+                            order.orderStatus === "failed"
+                        ) {
+                            paymentStatus = "failed";
+                        }
+
+                        sellerPayments.push({
+                            _id: order._id,
+                            orderId: order._id,
+                            paymentIntentId: order.paymentIntentId,
+                            amount: totalSellerAmount,
+                            commission: commission,
+                            netAmount: netAmount,
+                            status: paymentStatus,
+                            customerInfo: order.customerInfo,
+                            sellerItems: sellerItems,
+                            createdAt: order.createdAt,
+                            completedAt:
+                                order.paymentStatus === "paid"
+                                    ? order.updatedAt
+                                    : null,
+                        });
+                    }
+                });
+
+                res.send(sellerPayments);
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching seller payment history",
+                    error: error.message,
+                });
+            }
+        });
+
+        // get seller payment statistics
+        app.get("/api/seller/payment-stats/:email", async (req, res) => {
+            try {
+                const sellerEmail = req.params.email;
+                if (!sellerEmail) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
+                }
+
+                // Get seller's medicines
+                const sellerMedicines = await medicinesCollection
+                    .find({ "seller.email": sellerEmail })
+                    .toArray();
+
+                const medicineIds = sellerMedicines.map((med) =>
+                    med._id.toString()
+                );
+
+                // Get all orders (paid and pending)
+                const allOrders = await ordersCollection.find({}).toArray();
+
+                let totalEarnings = 0;
+                let totalCommissions = 0;
+                let completedPayments = 0;
+                let pendingPayments = 0;
+
+                allOrders.forEach((order) => {
+                    const sellerItems =
+                        order.items?.filter(
+                            (item) =>
+                                medicineIds.includes(
+                                    item.medicineId?.toString()
+                                ) || medicineIds.includes(item._id?.toString())
+                        ) || [];
+
+                    if (sellerItems.length > 0) {
+                        const totalSellerAmount = sellerItems.reduce(
+                            (sum, item) => sum + item.price * item.quantity,
+                            0
+                        );
+                        const commission = totalSellerAmount * 0.1;
+                        const netAmount = totalSellerAmount - commission;
+
+                        if (order.paymentStatus === "paid") {
+                            totalEarnings += netAmount;
+                            totalCommissions += commission;
+                            completedPayments++;
+                        } else {
+                            pendingPayments++;
+                        }
+                    }
+                });
+
+                const stats = {
+                    totalEarnings: parseFloat(totalEarnings.toFixed(2)),
+                    totalCommissions: parseFloat(totalCommissions.toFixed(2)),
+                    completedPayments,
+                    pendingPayments,
+                    totalPayments: completedPayments + pendingPayments,
+                };
+
+                res.send(stats);
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching seller payment statistics",
+                    error: error.message,
+                });
             }
         });
 
