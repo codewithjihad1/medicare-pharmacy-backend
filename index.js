@@ -136,83 +136,119 @@ async function run() {
         });
 
         // get seller stats
-        app.get("/api/seller/stats", async (req, res) => {
+        app.get("/api/seller/stats/:email", async (req, res) => {
             try {
-                // Get total medicines count
-                const totalMedicines = await medicinesCollection.countDocuments(
-                    {}
+            const sellerEmail = req.params.email;
+            if (!sellerEmail) {
+                return res.status(400).send({ message: "Email is required" });
+            }
+
+            // Get total medicines for this seller
+            const totalMedicines = await medicinesCollection.countDocuments({
+                "seller.email": sellerEmail
+            });
+
+            // Get all orders and filter for seller's items
+            const allOrders = await ordersCollection.find({}).toArray();
+            
+            let totalRevenue = 0;
+            let totalSales = 0;
+            let pendingOrders = 0;
+            
+            // Calculate monthly revenue for the last 6 months
+            const currentDate = new Date();
+            const monthlyRevenue = [];
+            const monthNames = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+            ];
+
+            // Initialize monthly revenue array
+            for (let i = 5; i >= 0; i--) {
+                const date = new Date(
+                currentDate.getFullYear(),
+                currentDate.getMonth() - i,
+                1
                 );
+                const monthName = monthNames[date.getMonth()];
+                monthlyRevenue.push({
+                month: monthName,
+                revenue: 0
+                });
+            }
 
-                // Get total categories count (can be used as additional metric)
-                const totalCategories =
-                    await categoriesCollection.countDocuments({});
+            // Process each order
+            allOrders.forEach((order) => {
+                // Filter items that belong to this seller
+                const sellerItems = order.items?.filter(
+                (item) => item.seller?.email === sellerEmail
+                ) || [];
 
-                // Calculate monthly revenue for the last 6 months
-                const currentDate = new Date();
-                const monthlyRevenue = [];
-                const monthNames = [
-                    "Jan",
-                    "Feb",
-                    "Mar",
-                    "Apr",
-                    "May",
-                    "Jun",
-                    "Jul",
-                    "Aug",
-                    "Sep",
-                    "Oct",
-                    "Nov",
-                    "Dec",
-                ];
-
-                for (let i = 5; i >= 0; i--) {
-                    const date = new Date(
-                        currentDate.getFullYear(),
-                        currentDate.getMonth() - i,
-                        1
-                    );
-                    const monthName = monthNames[date.getMonth()];
-
-                    // Generate dynamic revenue based on medicines count and some randomization
-                    // In a real app, this would come from actual sales/orders data
-                    const baseRevenue = totalMedicines * 50; // Base calculation
-                    const randomFactor = Math.random() * 0.5 + 0.75; // Random factor between 0.75-1.25
-                    const revenue = Math.round(baseRevenue * randomFactor);
-
-                    monthlyRevenue.push({
-                        month: monthName,
-                        revenue: revenue,
-                    });
-                }
-
-                // Calculate totals based on monthly revenue
-                const totalRevenue = monthlyRevenue.reduce(
-                    (sum, month) => sum + month.revenue,
+                if (sellerItems.length > 0) {
+                // Calculate total amount for seller's items in this order
+                const sellerOrderTotal = sellerItems.reduce(
+                    (sum, item) => sum + (item.pricePerUnit * item.quantity),
                     0
                 );
-                const paidTotal = Math.round(totalRevenue * 0.79); // 79% paid
-                const pendingTotal = totalRevenue - paidTotal;
 
-                // Calculate other metrics based on medicines
-                const totalSales = Math.round(totalMedicines * 6.5); // Approximate sales
-                const pendingOrders = Math.round(totalMedicines * 0.5); // Approximate pending orders
+                // Add to total revenue if payment is completed
+                if (order.paymentStatus === "paid") {
+                    totalRevenue += sellerOrderTotal;
+                    totalSales++;
 
-                const sellerStats = {
-                    totalRevenue: parseFloat(totalRevenue.toFixed(2)),
-                    paidTotal: parseFloat(paidTotal.toFixed(2)),
-                    pendingTotal: parseFloat(pendingTotal.toFixed(2)),
-                    totalMedicines: totalMedicines,
-                    totalSales: totalSales,
-                    pendingOrders: pendingOrders,
-                    monthlyRevenue: monthlyRevenue,
-                };
+                    // Add to monthly revenue
+                    const orderDate = new Date(order.createdAt);
+                    const orderMonth = orderDate.getMonth();
+                    const orderYear = orderDate.getFullYear();
+                    
+                    // Find matching month in the last 6 months
+                    const monthIndex = monthlyRevenue.findIndex(m => {
+                    const currentYear = currentDate.getFullYear();
+                    const currentMonth = currentDate.getMonth();
+                    
+                    for (let i = 5; i >= 0; i--) {
+                        const targetDate = new Date(currentYear, currentMonth - i, 1);
+                        if (targetDate.getMonth() === orderMonth && targetDate.getFullYear() === orderYear) {
+                        return monthNames[orderMonth] === m.month;
+                        }
+                    }
+                    return false;
+                    });
+                    
+                    if (monthIndex !== -1) {
+                    monthlyRevenue[monthIndex].revenue += sellerOrderTotal;
+                    }
+                } else {
+                    // Count as pending order
+                    pendingOrders++;
+                }
+                }
+            });
 
-                res.send(sellerStats);
+            // Calculate platform commission (10%) and net amounts
+            const totalCommission = totalRevenue * 0.1;
+            const paidTotal = totalRevenue - totalCommission;
+            const pendingTotal = 0; // No pending total since we only count paid orders
+
+            const sellerStats = {
+                totalRevenue: parseFloat(totalRevenue.toFixed(2)),
+                paidTotal: parseFloat(paidTotal.toFixed(2)),
+                pendingTotal: parseFloat(pendingTotal.toFixed(2)),
+                totalMedicines: totalMedicines,
+                totalSales: totalSales,
+                pendingOrders: pendingOrders,
+                monthlyRevenue: monthlyRevenue.map(m => ({
+                month: m.month,
+                revenue: parseFloat(m.revenue.toFixed(2))
+                }))
+            };
+
+            res.send(sellerStats);
             } catch (error) {
-                res.status(500).send({
-                    message: "Error fetching seller stats",
-                    error: error.message,
-                });
+            res.status(500).send({
+                message: "Error fetching seller stats",
+                error: error.message,
+            });
             }
         });
 
