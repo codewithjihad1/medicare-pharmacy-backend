@@ -16,6 +16,7 @@ const {
     companiesCollection,
     ordersCollection,
     advertiseRequestsCollection,
+    ObjectId,
 } = require("./mongodb/mongodb");
 
 const port = 5000;
@@ -132,11 +133,9 @@ async function run() {
                 });
 
                 if (existingCategory) {
-                    return res
-                        .status(409)
-                        .send({
-                            message: "Category with this name already exists",
-                        });
+                    return res.status(409).send({
+                        message: "Category with this name already exists",
+                    });
                 }
 
                 // Set default values
@@ -181,12 +180,9 @@ async function run() {
                     );
 
                     if (existingCategory) {
-                        return res
-                            .status(409)
-                            .send({
-                                message:
-                                    "Category with this name already exists",
-                            });
+                        return res.status(409).send({
+                            message: "Category with this name already exists",
+                        });
                     }
                 }
 
@@ -835,6 +831,337 @@ async function run() {
                 } catch (error) {
                     res.status(500).send({
                         message: "Error fetching orders",
+                        error: error.message,
+                    });
+                }
+            }
+        );
+
+        // =================== PAYMENT MANAGEMENT ENDPOINTS ===================
+
+        // get all payments with pagination and filtering (admin only)
+        app.get(
+            "/api/admin/payments",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    const { page = 1, limit = 10, status = "all" } = req.query;
+                    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+                    // Build filter query
+                    let filterQuery = {};
+                    if (status !== "all") {
+                        filterQuery.paymentStatus = status;
+                    }
+
+                    // Get total count for pagination
+                    const totalCount = await ordersCollection.countDocuments(
+                        filterQuery
+                    );
+
+                    // Get orders with payment information
+                    const orders = await ordersCollection
+                        .find(filterQuery)
+                        .sort({ createdAt: -1 })
+                        .skip(skip)
+                        .limit(parseInt(limit))
+                        .toArray();
+
+                    // Transform orders to payment format
+                    const payments = orders.map((order) => ({
+                        id: order._id,
+                        orderId: order._id.toString().slice(-8).toUpperCase(),
+                        buyerName:
+                            order.customerInfo?.fullName ||
+                            order.customerInfo?.name ||
+                            "N/A",
+                        buyerEmail: order.customerInfo?.email || "N/A",
+                        amount: order.orderTotal || 0,
+                        paymentMethod: "Stripe",
+                        status: order.paymentStatus || "pending",
+                        createdAt: order.createdAt,
+                        paidAt:
+                            order.paymentStatus === "paid"
+                                ? order.updatedAt || order.createdAt
+                                : null,
+                        medicines: order.items
+                            ? `${order.items.length} item(s)`
+                            : "N/A",
+                        items: order.items || [],
+                        sellerEmails: order.items
+                            ? [
+                                  ...new Set(
+                                      order.items
+                                          .map((item) => item.seller?.email)
+                                          .filter(Boolean)
+                                  ),
+                              ]
+                            : [],
+                        sellerNames: order.items
+                            ? [
+                                  ...new Set(
+                                      order.items
+                                          .map((item) => item.seller?.name)
+                                          .filter(Boolean)
+                                  ),
+                              ]
+                            : [],
+                    }));
+
+                    // Calculate statistics
+                    const totalAmount = await ordersCollection
+                        .aggregate([
+                            { $match: {} },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const paidAmount = await ordersCollection
+                        .aggregate([
+                            { $match: { paymentStatus: "paid" } },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const pendingAmount = await ordersCollection
+                        .aggregate([
+                            { $match: { paymentStatus: { $ne: "paid" } } },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const stats = {
+                        totalAmount: totalAmount[0]?.total || 0,
+                        paidAmount: paidAmount[0]?.total || 0,
+                        pendingAmount: pendingAmount[0]?.total || 0,
+                        totalCount: totalCount,
+                        paidCount: await ordersCollection.countDocuments({
+                            paymentStatus: "paid",
+                        }),
+                        pendingCount: await ordersCollection.countDocuments({
+                            paymentStatus: { $ne: "paid" },
+                        }),
+                    };
+
+                    res.send({
+                        payments,
+                        stats,
+                        pagination: {
+                            currentPage: parseInt(page),
+                            totalPages: Math.ceil(totalCount / parseInt(limit)),
+                            totalCount,
+                            hasNext: skip + parseInt(limit) < totalCount,
+                            hasPrev: parseInt(page) > 1,
+                        },
+                    });
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error fetching payments",
+                        error: error.message,
+                    });
+                }
+            }
+        );
+
+        // accept payment (update payment status to paid)
+        app.patch(
+            "/api/admin/payments/:id/accept",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    const orderId = req.params.id;
+                    const orderObjectId = new ObjectId(orderId);
+
+                    // Check if order exists
+                    const order = await ordersCollection.findOne({
+                        _id: orderObjectId,
+                    });
+                    if (!order) {
+                        return res
+                            .status(404)
+                            .send({ message: "Order not found" });
+                    }
+
+                    // Check if payment is already accepted
+                    if (order.paymentStatus === "paid") {
+                        return res
+                            .status(400)
+                            .send({ message: "Payment already accepted" });
+                    }
+
+                    // Update payment status to paid
+                    const result = await ordersCollection.updateOne(
+                        { _id: orderObjectId },
+                        {
+                            $set: {
+                                paymentStatus: "paid",
+                                orderStatus: "confirmed",
+                                updatedAt: new Date().toISOString(),
+                            },
+                        }
+                    );
+
+                    if (result.modifiedCount > 0) {
+                        // Get updated order
+                        const updatedOrder = await ordersCollection.findOne({
+                            _id: orderObjectId,
+                        });
+
+                        res.send({
+                            message: "Payment accepted successfully",
+                            order: updatedOrder,
+                        });
+                    } else {
+                        res.status(400).send({
+                            message: "Failed to accept payment",
+                        });
+                    }
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error accepting payment",
+                        error: error.message,
+                    });
+                }
+            }
+        );
+
+        // get payment statistics (admin only)
+        app.get(
+            "/api/admin/payment-stats",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    // Get payment statistics
+                    const totalOrders = await ordersCollection.countDocuments(
+                        {}
+                    );
+                    const paidOrders = await ordersCollection.countDocuments({
+                        paymentStatus: "paid",
+                    });
+                    const pendingOrders = await ordersCollection.countDocuments(
+                        {
+                            paymentStatus: { $ne: "paid" },
+                        }
+                    );
+
+                    // Calculate revenue statistics
+                    const totalRevenue = await ordersCollection
+                        .aggregate([
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const paidRevenue = await ordersCollection
+                        .aggregate([
+                            { $match: { paymentStatus: "paid" } },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const pendingRevenue = await ordersCollection
+                        .aggregate([
+                            { $match: { paymentStatus: { $ne: "paid" } } },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    // Get monthly revenue for last 6 months
+                    const sixMonthsAgo = new Date();
+                    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+                    const monthlyRevenue = await ordersCollection
+                        .aggregate([
+                            {
+                                $match: {
+                                    createdAt: {
+                                        $gte: sixMonthsAgo.toISOString(),
+                                    },
+                                    paymentStatus: "paid",
+                                },
+                            },
+                            {
+                                $group: {
+                                    _id: {
+                                        year: {
+                                            $year: {
+                                                $dateFromString: {
+                                                    dateString: "$createdAt",
+                                                },
+                                            },
+                                        },
+                                        month: {
+                                            $month: {
+                                                $dateFromString: {
+                                                    dateString: "$createdAt",
+                                                },
+                                            },
+                                        },
+                                    },
+                                    revenue: { $sum: "$orderTotal" },
+                                    count: { $sum: 1 },
+                                },
+                            },
+                            { $sort: { "_id.year": 1, "_id.month": 1 } },
+                        ])
+                        .toArray();
+
+                    const stats = {
+                        totalOrders,
+                        paidOrders,
+                        pendingOrders,
+                        totalRevenue: totalRevenue[0]?.total || 0,
+                        paidRevenue: paidRevenue[0]?.total || 0,
+                        pendingRevenue: pendingRevenue[0]?.total || 0,
+                        successRate:
+                            totalOrders > 0
+                                ? ((paidOrders / totalOrders) * 100).toFixed(1)
+                                : 0,
+                        monthlyRevenue: monthlyRevenue.map((item) => ({
+                            month: `${item._id.year}-${String(
+                                item._id.month
+                            ).padStart(2, "0")}`,
+                            revenue: item.revenue,
+                            count: item.count,
+                        })),
+                    };
+
+                    res.send(stats);
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error fetching payment statistics",
                         error: error.message,
                     });
                 }
