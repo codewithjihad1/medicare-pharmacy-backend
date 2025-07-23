@@ -1411,9 +1411,9 @@ async function run() {
         app.get("/api/advertise-requests/active/slider", async (req, res) => {
             try {
                 const query = {
-                    status: { $in: ["approved", "active"] },
-                    startDate: { $lte: new Date().toISOString().split("T")[0] },
-                    endDate: { $gte: new Date().toISOString().split("T")[0] },
+                    status: "approved",
+                    // startDate: { $lte: new Date().toISOString().split("T")[0] },
+                    // endDate: { $gte: new Date().toISOString().split("T")[0] },
                 };
 
                 const activeAds = await advertiseRequestsCollection
@@ -1429,6 +1429,311 @@ async function run() {
                 });
             }
         });
+
+        // =================== SALES REPORT ENDPOINTS ===================
+
+        // get sales report (admin only)
+        app.get(
+            "/api/admin/sales-report",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    const {
+                        startDate,
+                        endDate,
+                        page = 1,
+                        limit = 50,
+                    } = req.query;
+                    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+                    // Build filter query
+                    let matchQuery = { paymentStatus: "paid" };
+
+                    if (startDate && endDate) {
+                        matchQuery.createdAt = {
+                            $gte: startDate,
+                            $lte: endDate,
+                        };
+                    }
+
+                    // Aggregate pipeline to get detailed sales data
+                    const pipeline = [
+                        { $match: matchQuery },
+                        { $unwind: "$items" },
+                        {
+                            $project: {
+                                orderId: {
+                                    $let: {
+                                        vars: {
+                                            str: { $toString: "$_id" },
+                                        },
+                                        in: {
+                                            $substr: [
+                                                "$$str",
+                                                {
+                                                    $max: [
+                                                        0,
+                                                        {
+                                                            $subtract: [
+                                                                { $strLenCP: "$$str" },
+                                                                8,
+                                                            ],
+                                                        },
+                                                    ],
+                                                },
+                                                8,
+                                            ],
+                                        },
+                                    },
+                                },
+                                buyerName: "$customerInfo.fullName",
+                                buyerEmail: "$customerInfo.email",
+                                medicineName: "$items.name",
+                                medicineCategory: "$items.category",
+                                sellerName: "$items.seller.name",
+                                sellerEmail: "$items.seller.email",
+                                quantity: "$items.quantity",
+                                unitPrice: "$items.pricePerUnit",
+                                totalPrice: {
+                                    $multiply: [
+                                        "$items.quantity",
+                                        "$items.pricePerUnit",
+                                    ],
+                                },
+                                saleDate: "$createdAt",
+                                status: {
+                                    $cond: [
+                                        { $eq: ["$paymentStatus", "paid"] },
+                                        "completed",
+                                        "pending",
+                                    ],
+                                },
+                            },
+                        },
+                        { $sort: { saleDate: -1 } },
+                    ];
+
+                    // Get total count for pagination
+                    const totalCountPipeline = [
+                        ...pipeline,
+                        { $count: "total" },
+                    ];
+                    const totalCountResult = await ordersCollection
+                        .aggregate(totalCountPipeline)
+                        .toArray();
+                    const totalCount = totalCountResult[0]?.total || 0;
+
+                    // Add pagination to main pipeline
+                    pipeline.push({ $skip: skip });
+                    pipeline.push({ $limit: parseInt(limit) });
+
+                    // Execute aggregation
+                    const salesData = await ordersCollection
+                        .aggregate(pipeline)
+                        .toArray();
+
+                    // Calculate statistics
+                    const statsPipeline = [
+                        { $match: matchQuery },
+                        { $unwind: "$items" },
+                        {
+                            $group: {
+                                _id: null,
+                                totalRevenue: {
+                                    $sum: {
+                                        $multiply: [
+                                            "$items.quantity",
+                                            "$items.pricePerUnit",
+                                        ],
+                                    },
+                                },
+                                totalOrders: { $addToSet: "$_id" },
+                                totalQuantity: { $sum: "$items.quantity" },
+                                avgOrderValue: {
+                                    $avg: {
+                                        $multiply: [
+                                            "$items.quantity",
+                                            "$items.pricePerUnit",
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                    ];
+
+                    const statsResult = await ordersCollection
+                        .aggregate(statsPipeline)
+                        .toArray();
+                    const stats = statsResult[0] || {
+                        totalRevenue: 0,
+                        totalOrders: 0,
+                        totalQuantity: 0,
+                        avgOrderValue: 0,
+                    };
+
+                    res.send({
+                        salesData: salesData.map((item) => ({
+                            ...item,
+                            orderId: item.orderId.toUpperCase(),
+                            id:
+                                item._id ||
+                                Math.random().toString(36).substring(2, 11),
+                        })),
+                        stats,
+                        pagination: {
+                            currentPage: parseInt(page),
+                            totalPages: Math.ceil(totalCount / parseInt(limit)),
+                            totalCount,
+                            hasNext: skip + parseInt(limit) < totalCount,
+                            hasPrev: parseInt(page) > 1,
+                        },
+                    });
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error fetching sales report",
+                        error: error.message,
+                    });
+                }
+            }
+        );
+
+        // get sales statistics summary (admin only)
+        app.get(
+            "/api/admin/sales-stats",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    const { period = "month" } = req.query;
+
+                    // Calculate date range based on period
+                    const now = new Date();
+                    let startDate;
+
+                    switch (period) {
+                        case "week":
+                            startDate = new Date(
+                                now.getTime() - 7 * 24 * 60 * 60 * 1000
+                            );
+                            break;
+                        case "month":
+                            startDate = new Date(
+                                now.getTime() - 30 * 24 * 60 * 60 * 1000
+                            );
+                            break;
+                        case "year":
+                            startDate = new Date(
+                                now.getTime() - 365 * 24 * 60 * 60 * 1000
+                            );
+                            break;
+                        default:
+                            startDate = new Date(
+                                now.getTime() - 30 * 24 * 60 * 60 * 1000
+                            );
+                    }
+
+                    const matchQuery = {
+                        paymentStatus: "paid",
+                        createdAt: { $gte: startDate.toISOString() },
+                    };
+
+                    // Get detailed statistics
+                    const statsResult = await ordersCollection
+                        .aggregate([
+                            { $match: matchQuery },
+                            { $unwind: "$items" },
+                            {
+                                $group: {
+                                    _id: null,
+                                    totalRevenue: {
+                                        $sum: {
+                                            $multiply: [
+                                                "$items.quantity",
+                                                "$items.pricePerUnit",
+                                            ],
+                                        },
+                                    },
+                                    totalOrders: { $addToSet: "$_id" },
+                                    totalItems: { $sum: 1 },
+                                    totalQuantity: { $sum: "$items.quantity" },
+                                    avgOrderValue: {
+                                        $avg: {
+                                            $multiply: [
+                                                "$items.quantity",
+                                                "$items.pricePerUnit",
+                                            ],
+                                        },
+                                    },
+                                    topCategories: { $push: "$items.category" },
+                                    topSellers: {
+                                        $push: "$items.seller.email",
+                                    },
+                                },
+                            },
+                            {
+                                $project: {
+                                    totalRevenue: 1,
+                                    totalOrders: { $size: "$totalOrders" },
+                                    totalItems: 1,
+                                    totalQuantity: 1,
+                                    avgOrderValue: 1,
+                                    topCategories: 1,
+                                    topSellers: 1,
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const stats = statsResult[0] || {
+                        totalRevenue: 0,
+                        totalOrders: 0,
+                        totalItems: 0,
+                        totalQuantity: 0,
+                        avgOrderValue: 0,
+                        topCategories: [],
+                        topSellers: [],
+                    };
+
+                    // Process top categories and sellers
+                    const categoryCount = {};
+                    stats.topCategories.forEach((cat) => {
+                        categoryCount[cat] = (categoryCount[cat] || 0) + 1;
+                    });
+
+                    const sellerCount = {};
+                    stats.topSellers.forEach((seller) => {
+                        sellerCount[seller] = (sellerCount[seller] || 0) + 1;
+                    });
+
+                    const topCategories = Object.entries(categoryCount)
+                        .sort(([, a], [, b]) => b - a)
+                        .slice(0, 5)
+                        .map(([category, count]) => ({ category, count }));
+
+                    const topSellers = Object.entries(sellerCount)
+                        .sort(([, a], [, b]) => b - a)
+                        .slice(0, 5)
+                        .map(([seller, count]) => ({ seller, count }));
+
+                    res.send({
+                        ...stats,
+                        topCategories,
+                        topSellers,
+                        period,
+                        dateRange: {
+                            from: startDate.toISOString(),
+                            to: now.toISOString(),
+                        },
+                    });
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error fetching sales statistics",
+                        error: error.message,
+                    });
+                }
+            }
+        );
 
         // =================== SELLER PAYMENT HISTORY ENDPOINTS ===================
 
