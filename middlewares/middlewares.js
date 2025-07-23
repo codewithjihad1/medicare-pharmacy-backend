@@ -1,12 +1,11 @@
 const admin = require("firebase-admin");
 
 const serviceAccount = require("../firebase-adminsdk.json");
+const { usersCollection } = require("../mongodb/mongodb");
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+    credential: admin.credential.cert(serviceAccount),
 });
-
-
 
 // Verify Firebase ID Token Middleware
 const verifyFirebaseToken = async (req, res, next) => {
@@ -36,7 +35,22 @@ const verifyTokenEmail = async (req, res, next) => {
     next();
 };
 
+// verify admin role middleware
+const verifyAdmin = async (req, res, next) => {
+    const email = req?.decoded?.email;
+    const user = await usersCollection.findOne({
+        email,
+    });
+    if (!user || user?.role !== "admin")
+        return res
+            .status(403)
+            .send({ message: "Admin only Actions!", role: user?.role });
+
+    next();
+};
+
 module.exports = {
     verifyFirebaseToken,
     verifyTokenEmail,
+    verifyAdmin,
 };

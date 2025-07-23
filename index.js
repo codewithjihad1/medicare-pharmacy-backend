@@ -3,11 +3,20 @@ const express = require("express");
 const cors = require("cors");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-const { MongoClient, ObjectId } = require("mongodb");
 const {
     verifyFirebaseToken,
     verifyTokenEmail,
+    verifyAdmin,
 } = require("./middlewares/middlewares");
+const {
+    usersCollection,
+    medicinesCollection,
+    categoriesCollection,
+    healthBlogsCollection,
+    companiesCollection,
+    ordersCollection,
+    advertiseRequestsCollection,
+} = require("./mongodb/mongodb");
 
 const port = 5000;
 
@@ -17,23 +26,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// mongoDB connection string
-const mongoURI = `mongodb+srv://${process.env.MONGODB_USER}:${process.env.MONGODB_PASS}@cluster0.ya0qxn8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
-// mongodb client
-const client = new MongoClient(mongoURI);
-
 async function run() {
     try {
-        const db = client.db("medicineShop");
-        const usersCollection = db.collection("users");
-        const medicinesCollection = db.collection("medicines");
-        const categoriesCollection = db.collection("categories");
-        const healthBlogsCollection = db.collection("health-blogs");
-        const companiesCollection = db.collection("companies");
-        const ordersCollection = db.collection("orders");
-        const advertiseRequestsCollection = db.collection("advertise-requests");
-
         // post user data
         app.post("/api/users", async (req, res) => {
             const user = req.body;
@@ -51,10 +45,20 @@ async function run() {
         });
 
         // Get all users
-        app.get("/api/users", async (req, res) => {
-            const result = await usersCollection.find({}).toArray();
-            res.send(result);
-        });
+        app.get(
+            "/api/users",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                const email = req.decoded.email;
+                const result = await usersCollection
+                    .find({
+                        email: { $ne: email },
+                    })
+                    .toArray();
+                res.send(result);
+            }
+        );
 
         // get user by email
         app.get(
@@ -108,6 +112,138 @@ async function run() {
             }
         });
 
+        // =================== CATEGORY MANAGEMENT ENDPOINTS ===================
+
+        // add new category
+        app.post("/api/categories", async (req, res) => {
+            try {
+                const category = req.body;
+
+                // Validate required fields
+                if (!category.name) {
+                    return res
+                        .status(400)
+                        .send({ message: "Category name is required" });
+                }
+
+                // Check if category with same name or slug already exists
+                const existingCategory = await categoriesCollection.findOne({
+                    $or: [{ name: category.name }, { slug: category.slug }],
+                });
+
+                if (existingCategory) {
+                    return res
+                        .status(409)
+                        .send({
+                            message: "Category with this name already exists",
+                        });
+                }
+
+                // Set default values
+                category.medicineCount = category.medicineCount || 0;
+                category.createdAt =
+                    category.createdAt || new Date().toISOString();
+                category.updatedAt = new Date().toISOString();
+
+                const result = await categoriesCollection.insertOne(category);
+                res.status(201).send({
+                    message: "Category created successfully",
+                    categoryId: result.insertedId,
+                });
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error creating category",
+                    error: error.message,
+                });
+            }
+        });
+
+        // update category by id
+        app.put("/api/categories/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                const updatedData = req.body;
+                delete updatedData._id; // Remove _id to avoid conflict
+
+                const categoryID = new ObjectId(id);
+                updatedData.updatedAt = new Date().toISOString();
+
+                // Check if updating name/slug conflicts with existing category
+                if (updatedData.name || updatedData.slug) {
+                    const existingCategory = await categoriesCollection.findOne(
+                        {
+                            _id: { $ne: categoryID },
+                            $or: [
+                                { name: updatedData.name },
+                                { slug: updatedData.slug },
+                            ],
+                        }
+                    );
+
+                    if (existingCategory) {
+                        return res
+                            .status(409)
+                            .send({
+                                message:
+                                    "Category with this name already exists",
+                            });
+                    }
+                }
+
+                const result = await categoriesCollection.updateOne(
+                    { _id: categoryID },
+                    { $set: updatedData }
+                );
+
+                if (result.modifiedCount > 0) {
+                    res.send({ message: "Category updated successfully" });
+                } else {
+                    res.status(404).send({ message: "Category not found" });
+                }
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error updating category",
+                    error: error.message,
+                });
+            }
+        });
+
+        // delete category by id
+        app.delete("/api/categories/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                const categoryID = new ObjectId(id);
+
+                // Check if category has associated medicines
+                const medicinesInCategory =
+                    await medicinesCollection.countDocuments({
+                        category: { $exists: true }, // You might need to adjust this query based on your medicine schema
+                    });
+
+                if (medicinesInCategory > 0) {
+                    return res.status(400).send({
+                        message:
+                            "Cannot delete category with associated medicines. Please reassign or delete the medicines first.",
+                    });
+                }
+
+                const result = await categoriesCollection.deleteOne({
+                    _id: categoryID,
+                });
+
+                if (result.deletedCount > 0) {
+                    res.send({ message: "Category deleted successfully" });
+                } else {
+                    res.status(404).send({ message: "Category not found" });
+                }
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error deleting category",
+                    error: error.message,
+                });
+            }
+        });
+
         // get medicine by banner status
         app.get("/api/medicines/banner", async (req, res) => {
             const query = { isInBanner: true };
@@ -138,117 +274,143 @@ async function run() {
         // get seller stats
         app.get("/api/seller/stats/:email", async (req, res) => {
             try {
-            const sellerEmail = req.params.email;
-            if (!sellerEmail) {
-                return res.status(400).send({ message: "Email is required" });
-            }
+                const sellerEmail = req.params.email;
+                if (!sellerEmail) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
+                }
 
-            // Get total medicines for this seller
-            const totalMedicines = await medicinesCollection.countDocuments({
-                "seller.email": sellerEmail
-            });
-
-            // Get all orders and filter for seller's items
-            const allOrders = await ordersCollection.find({}).toArray();
-            
-            let totalRevenue = 0;
-            let totalSales = 0;
-            let pendingOrders = 0;
-            
-            // Calculate monthly revenue for the last 6 months
-            const currentDate = new Date();
-            const monthlyRevenue = [];
-            const monthNames = [
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-            ];
-
-            // Initialize monthly revenue array
-            for (let i = 5; i >= 0; i--) {
-                const date = new Date(
-                currentDate.getFullYear(),
-                currentDate.getMonth() - i,
-                1
-                );
-                const monthName = monthNames[date.getMonth()];
-                monthlyRevenue.push({
-                month: monthName,
-                revenue: 0
-                });
-            }
-
-            // Process each order
-            allOrders.forEach((order) => {
-                // Filter items that belong to this seller
-                const sellerItems = order.items?.filter(
-                (item) => item.seller?.email === sellerEmail
-                ) || [];
-
-                if (sellerItems.length > 0) {
-                // Calculate total amount for seller's items in this order
-                const sellerOrderTotal = sellerItems.reduce(
-                    (sum, item) => sum + (item.pricePerUnit * item.quantity),
-                    0
+                // Get total medicines for this seller
+                const totalMedicines = await medicinesCollection.countDocuments(
+                    {
+                        "seller.email": sellerEmail,
+                    }
                 );
 
-                // Add to total revenue if payment is completed
-                if (order.paymentStatus === "paid") {
-                    totalRevenue += sellerOrderTotal;
-                    totalSales++;
+                // Get all orders and filter for seller's items
+                const allOrders = await ordersCollection.find({}).toArray();
 
-                    // Add to monthly revenue
-                    const orderDate = new Date(order.createdAt);
-                    const orderMonth = orderDate.getMonth();
-                    const orderYear = orderDate.getFullYear();
-                    
-                    // Find matching month in the last 6 months
-                    const monthIndex = monthlyRevenue.findIndex(m => {
-                    const currentYear = currentDate.getFullYear();
-                    const currentMonth = currentDate.getMonth();
-                    
-                    for (let i = 5; i >= 0; i--) {
-                        const targetDate = new Date(currentYear, currentMonth - i, 1);
-                        if (targetDate.getMonth() === orderMonth && targetDate.getFullYear() === orderYear) {
-                        return monthNames[orderMonth] === m.month;
+                let totalRevenue = 0;
+                let totalSales = 0;
+                let pendingOrders = 0;
+
+                // Calculate monthly revenue for the last 6 months
+                const currentDate = new Date();
+                const monthlyRevenue = [];
+                const monthNames = [
+                    "Jan",
+                    "Feb",
+                    "Mar",
+                    "Apr",
+                    "May",
+                    "Jun",
+                    "Jul",
+                    "Aug",
+                    "Sep",
+                    "Oct",
+                    "Nov",
+                    "Dec",
+                ];
+
+                // Initialize monthly revenue array
+                for (let i = 5; i >= 0; i--) {
+                    const date = new Date(
+                        currentDate.getFullYear(),
+                        currentDate.getMonth() - i,
+                        1
+                    );
+                    const monthName = monthNames[date.getMonth()];
+                    monthlyRevenue.push({
+                        month: monthName,
+                        revenue: 0,
+                    });
+                }
+
+                // Process each order
+                allOrders.forEach((order) => {
+                    // Filter items that belong to this seller
+                    const sellerItems =
+                        order.items?.filter(
+                            (item) => item.seller?.email === sellerEmail
+                        ) || [];
+
+                    if (sellerItems.length > 0) {
+                        // Calculate total amount for seller's items in this order
+                        const sellerOrderTotal = sellerItems.reduce(
+                            (sum, item) =>
+                                sum + item.pricePerUnit * item.quantity,
+                            0
+                        );
+
+                        // Add to total revenue if payment is completed
+                        if (order.paymentStatus === "paid") {
+                            totalRevenue += sellerOrderTotal;
+                            totalSales++;
+
+                            // Add to monthly revenue
+                            const orderDate = new Date(order.createdAt);
+                            const orderMonth = orderDate.getMonth();
+                            const orderYear = orderDate.getFullYear();
+
+                            // Find matching month in the last 6 months
+                            const monthIndex = monthlyRevenue.findIndex((m) => {
+                                const currentYear = currentDate.getFullYear();
+                                const currentMonth = currentDate.getMonth();
+
+                                for (let i = 5; i >= 0; i--) {
+                                    const targetDate = new Date(
+                                        currentYear,
+                                        currentMonth - i,
+                                        1
+                                    );
+                                    if (
+                                        targetDate.getMonth() === orderMonth &&
+                                        targetDate.getFullYear() === orderYear
+                                    ) {
+                                        return (
+                                            monthNames[orderMonth] === m.month
+                                        );
+                                    }
+                                }
+                                return false;
+                            });
+
+                            if (monthIndex !== -1) {
+                                monthlyRevenue[monthIndex].revenue +=
+                                    sellerOrderTotal;
+                            }
+                        } else {
+                            // Count as pending order
+                            pendingOrders++;
                         }
                     }
-                    return false;
-                    });
-                    
-                    if (monthIndex !== -1) {
-                    monthlyRevenue[monthIndex].revenue += sellerOrderTotal;
-                    }
-                } else {
-                    // Count as pending order
-                    pendingOrders++;
-                }
-                }
-            });
+                });
 
-            // Calculate platform commission (10%) and net amounts
-            const totalCommission = totalRevenue * 0.1;
-            const paidTotal = totalRevenue - totalCommission;
-            const pendingTotal = 0; // No pending total since we only count paid orders
+                // Calculate platform commission (10%) and net amounts
+                const totalCommission = totalRevenue * 0.1;
+                const paidTotal = totalRevenue - totalCommission;
+                const pendingTotal = 0; // No pending total since we only count paid orders
 
-            const sellerStats = {
-                totalRevenue: parseFloat(totalRevenue.toFixed(2)),
-                paidTotal: parseFloat(paidTotal.toFixed(2)),
-                pendingTotal: parseFloat(pendingTotal.toFixed(2)),
-                totalMedicines: totalMedicines,
-                totalSales: totalSales,
-                pendingOrders: pendingOrders,
-                monthlyRevenue: monthlyRevenue.map(m => ({
-                month: m.month,
-                revenue: parseFloat(m.revenue.toFixed(2))
-                }))
-            };
+                const sellerStats = {
+                    totalRevenue: parseFloat(totalRevenue.toFixed(2)),
+                    paidTotal: parseFloat(paidTotal.toFixed(2)),
+                    pendingTotal: parseFloat(pendingTotal.toFixed(2)),
+                    totalMedicines: totalMedicines,
+                    totalSales: totalSales,
+                    pendingOrders: pendingOrders,
+                    monthlyRevenue: monthlyRevenue.map((m) => ({
+                        month: m.month,
+                        revenue: parseFloat(m.revenue.toFixed(2)),
+                    })),
+                };
 
-            res.send(sellerStats);
+                res.send(sellerStats);
             } catch (error) {
-            res.status(500).send({
-                message: "Error fetching seller stats",
-                error: error.message,
-            });
+                res.status(500).send({
+                    message: "Error fetching seller stats",
+                    error: error.message,
+                });
             }
         });
 
@@ -263,6 +425,236 @@ async function run() {
                 res.send({ role: user.role });
             } else {
                 res.status(404).send({ message: "User not found" });
+            }
+        });
+
+        // get user statistics
+        app.get("/api/user-stats/:email", async (req, res) => {
+            try {
+                const userEmail = req.params.email;
+                if (!userEmail) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
+                }
+
+                // Get user info
+                const user = await usersCollection.findOne({
+                    email: userEmail,
+                });
+                if (!user) {
+                    return res.status(404).send({ message: "User not found" });
+                }
+
+                // Get user's orders
+                const userOrders = await ordersCollection
+                    .find({ "customerInfo.email": userEmail })
+                    .toArray();
+
+                // Calculate statistics
+                let totalOrders = userOrders.length;
+                let totalSpent = 0;
+                let completedOrders = 0;
+                let pendingOrders = 0;
+                let recentOrders = [];
+
+                // Process orders for statistics
+                userOrders.forEach((order) => {
+                    if (order.paymentStatus === "paid") {
+                        totalSpent += order.orderTotal || 0;
+                        completedOrders++;
+                    } else {
+                        pendingOrders++;
+                    }
+                });
+
+                // Get recent orders (last 5)
+                recentOrders = userOrders
+                    .sort(
+                        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+                    )
+                    .slice(0, 5)
+                    .map((order) => ({
+                        id: order._id,
+                        orderId: order._id.toString().slice(-6).toUpperCase(),
+                        itemCount: order.items?.length || 0,
+                        total: order.orderTotal || 0,
+                        status:
+                            order.paymentStatus === "paid"
+                                ? "Delivered"
+                                : "Pending",
+                        createdAt: order.createdAt,
+                    }));
+
+                // Calculate wishlist items (placeholder - would need wishlist collection)
+                const wishlistItems = 0; // TODO: Implement wishlist functionality
+
+                // Calculate monthly spending for the last 6 months
+                const currentDate = new Date();
+                const monthlySpending = [];
+                const monthNames = [
+                    "Jan",
+                    "Feb",
+                    "Mar",
+                    "Apr",
+                    "May",
+                    "Jun",
+                    "Jul",
+                    "Aug",
+                    "Sep",
+                    "Oct",
+                    "Nov",
+                    "Dec",
+                ];
+
+                // Initialize monthly spending array
+                for (let i = 5; i >= 0; i--) {
+                    const date = new Date(
+                        currentDate.getFullYear(),
+                        currentDate.getMonth() - i,
+                        1
+                    );
+                    const monthName = monthNames[date.getMonth()];
+                    monthlySpending.push({
+                        month: monthName,
+                        spending: 0,
+                    });
+                }
+
+                // Calculate monthly spending
+                userOrders.forEach((order) => {
+                    if (order.paymentStatus === "paid" && order.createdAt) {
+                        const orderDate = new Date(order.createdAt);
+                        const orderMonth = orderDate.getMonth();
+                        const orderYear = orderDate.getFullYear();
+
+                        // Find matching month in the last 6 months
+                        const monthIndex = monthlySpending.findIndex((m) => {
+                            const currentYear = currentDate.getFullYear();
+                            const currentMonth = currentDate.getMonth();
+
+                            for (let i = 5; i >= 0; i--) {
+                                const targetDate = new Date(
+                                    currentYear,
+                                    currentMonth - i,
+                                    1
+                                );
+                                if (
+                                    targetDate.getMonth() === orderMonth &&
+                                    targetDate.getFullYear() === orderYear
+                                ) {
+                                    return monthNames[orderMonth] === m.month;
+                                }
+                            }
+                            return false;
+                        });
+
+                        if (monthIndex !== -1) {
+                            monthlySpending[monthIndex].spending +=
+                                order.orderTotal || 0;
+                        }
+                    }
+                });
+
+                // Prepare user stats response
+                const userStats = {
+                    totalOrders: totalOrders,
+                    completedOrders: completedOrders,
+                    pendingOrders: pendingOrders,
+                    totalSpent: parseFloat(totalSpent.toFixed(2)),
+                    wishlistItems: wishlistItems,
+                    accountType: user.role || "customer",
+                    memberSince: user.createAt || user.createdAt,
+                    recentOrders: recentOrders,
+                    monthlySpending: monthlySpending.map((m) => ({
+                        month: m.month,
+                        spending: parseFloat(m.spending.toFixed(2)),
+                    })),
+                };
+
+                res.send(userStats);
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching user statistics",
+                    error: error.message,
+                });
+            }
+        });
+
+        // get user profile by email
+        app.get("/api/user/profile/:email", async (req, res) => {
+            const email = req.params.email;
+            if (!email) {
+                return res.status(400).send({ message: "Email is required" });
+            }
+            const userProfile = await usersCollection.findOne({ email: email });
+            if (!userProfile) {
+                return res.status(404).send({ message: "User not found" });
+            }
+            res.send(userProfile);
+        });
+
+        // update user profile
+        app.put("/api/user/profile", async (req, res) => {
+            try {
+                const { email, ...profileData } = req.body;
+
+                if (!email) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
+                }
+
+                // Update user profile in database
+                const updateData = {
+                    ...profileData,
+                    updatedAt: new Date().toISOString(),
+                };
+
+                const result = await usersCollection.updateOne(
+                    { email: email },
+                    { $set: updateData }
+                );
+
+                if (result.modifiedCount > 0 || result.matchedCount > 0) {
+                    res.send({
+                        message: "Profile updated successfully",
+                        modifiedCount: result.modifiedCount,
+                    });
+                } else {
+                    res.status(404).send({ message: "User not found" });
+                }
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error updating user profile",
+                    error: error.message,
+                });
+            }
+        });
+
+        // get user profile by email
+        app.get("/api/user/profile/:email", async (req, res) => {
+            try {
+                const email = req.params.email;
+
+                if (!email) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
+                }
+
+                const user = await usersCollection.findOne({ email: email });
+
+                if (user) {
+                    res.send(user);
+                } else {
+                    res.status(404).send({ message: "User not found" });
+                }
+            } catch (error) {
+                res.status(500).send({
+                    message: "Error fetching user profile",
+                    error: error.message,
+                });
             }
         });
 
@@ -362,6 +754,35 @@ async function run() {
 
                 const result = await ordersCollection.insertOne(order);
 
+                // Update stock quantities for ordered medicines
+                for (const item of cartItems) {
+                    const medicineId = new ObjectId(item._id);
+                    const quantityOrdered = item.quantity;
+
+                    // Decrease stock quantity
+                    await medicinesCollection.updateOne(
+                        { _id: medicineId },
+                        {
+                            $inc: { stockQuantity: -quantityOrdered },
+                            $set: {
+                                inStock: true,
+                                updatedAt: new Date().toISOString(),
+                            },
+                        }
+                    );
+
+                    // Check if stock is now zero and update inStock status
+                    const updatedMedicine = await medicinesCollection.findOne({
+                        _id: medicineId,
+                    });
+                    if (updatedMedicine && updatedMedicine.stockQuantity <= 0) {
+                        await medicinesCollection.updateOne(
+                            { _id: medicineId },
+                            { $set: { inStock: false, stockQuantity: 0 } }
+                        );
+                    }
+                }
+
                 res.status(201).send({
                     message: "Order created successfully",
                     orderId: result.insertedId,
@@ -400,20 +821,25 @@ async function run() {
         );
 
         // get all orders (admin only)
-        app.get("/api/orders", async (req, res) => {
-            try {
-                const orders = await ordersCollection
-                    .find({})
-                    .sort({ createdAt: -1 })
-                    .toArray();
-                res.send(orders);
-            } catch (error) {
-                res.status(500).send({
-                    message: "Error fetching orders",
-                    error: error.message,
-                });
+        app.get(
+            "/api/orders",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    const orders = await ordersCollection
+                        .find({})
+                        .sort({ createdAt: -1 })
+                        .toArray();
+                    res.send(orders);
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error fetching orders",
+                        error: error.message,
+                    });
+                }
             }
-        });
+        );
 
         // add new medicine
         app.post("/api/medicines", async (req, res) => {
@@ -682,131 +1108,135 @@ async function run() {
         // get payment history for seller's medicines
         app.get("/api/seller/payments/:email", async (req, res) => {
             try {
-            const sellerEmail = req.params.email;
-            if (!sellerEmail) {
-                return res
-                .status(400)
-                .send({ message: "Email is required" });
-            }
-
-            // Get all orders
-            const allOrders = await ordersCollection
-                .find({})
-                .sort({ createdAt: -1 })
-                .toArray();
-
-            // Filter orders that contain seller's medicines and calculate payments
-            const sellerPayments = [];
-
-            allOrders.forEach((order) => {
-                // Filter items that belong to this seller
-                const sellerItems = order.items?.filter(
-                (item) => item.seller?.email === sellerEmail
-                ) || [];
-
-                if (sellerItems.length > 0) {
-                const totalSellerAmount = sellerItems.reduce(
-                    (sum, item) => sum + item.pricePerUnit * item.quantity,
-                    0
-                );
-                const commission = totalSellerAmount * 0.1; // 10% platform commission
-                const netAmount = totalSellerAmount - commission;
-
-                // Determine payment status
-                let paymentStatus = "pending"; // default
-                if (order.paymentStatus === "paid") {
-                    paymentStatus = "completed";
-                } else if (
-                    order.orderStatus === "cancelled" ||
-                    order.orderStatus === "failed"
-                ) {
-                    paymentStatus = "failed";
+                const sellerEmail = req.params.email;
+                if (!sellerEmail) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
                 }
 
-                sellerPayments.push({
-                    _id: order._id,
-                    orderId: order._id,
-                    paymentIntentId: order.paymentIntentId,
-                    amount: totalSellerAmount,
-                    commission: commission,
-                    netAmount: netAmount,
-                    status: paymentStatus,
-                    customerInfo: order.customerInfo,
-                    sellerItems: sellerItems,
-                    createdAt: order.createdAt,
-                    completedAt:
-                    order.paymentStatus === "paid"
-                        ? order.updatedAt
-                        : null,
+                // Get all orders
+                const allOrders = await ordersCollection
+                    .find({})
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                // Filter orders that contain seller's medicines and calculate payments
+                const sellerPayments = [];
+
+                allOrders.forEach((order) => {
+                    // Filter items that belong to this seller
+                    const sellerItems =
+                        order.items?.filter(
+                            (item) => item.seller?.email === sellerEmail
+                        ) || [];
+
+                    if (sellerItems.length > 0) {
+                        const totalSellerAmount = sellerItems.reduce(
+                            (sum, item) =>
+                                sum + item.pricePerUnit * item.quantity,
+                            0
+                        );
+                        const commission = totalSellerAmount * 0.1; // 10% platform commission
+                        const netAmount = totalSellerAmount - commission;
+
+                        // Determine payment status
+                        let paymentStatus = "pending"; // default
+                        if (order.paymentStatus === "paid") {
+                            paymentStatus = "completed";
+                        } else if (
+                            order.orderStatus === "cancelled" ||
+                            order.orderStatus === "failed"
+                        ) {
+                            paymentStatus = "failed";
+                        }
+
+                        sellerPayments.push({
+                            _id: order._id,
+                            orderId: order._id,
+                            paymentIntentId: order.paymentIntentId,
+                            amount: totalSellerAmount,
+                            commission: commission,
+                            netAmount: netAmount,
+                            status: paymentStatus,
+                            customerInfo: order.customerInfo,
+                            sellerItems: sellerItems,
+                            createdAt: order.createdAt,
+                            completedAt:
+                                order.paymentStatus === "paid"
+                                    ? order.updatedAt
+                                    : null,
+                        });
+                    }
                 });
-                }
-            });
 
-            res.send(sellerPayments);
+                res.send(sellerPayments);
             } catch (error) {
-            res.status(500).send({
-                message: "Error fetching seller payment history",
-                error: error.message,
-            });
+                res.status(500).send({
+                    message: "Error fetching seller payment history",
+                    error: error.message,
+                });
             }
         });
 
         // get seller payment statistics
         app.get("/api/seller/payment-stats/:email", async (req, res) => {
             try {
-            const sellerEmail = req.params.email;
-            if (!sellerEmail) {
-                return res
-                .status(400)
-                .send({ message: "Email is required" });
-            }
-
-            // Get all orders
-            const allOrders = await ordersCollection.find({}).toArray();
-
-            let totalEarnings = 0;
-            let totalCommissions = 0;
-            let completedPayments = 0;
-            let pendingPayments = 0;
-
-            allOrders.forEach((order) => {
-                // Filter items that belong to this seller
-                const sellerItems = order.items?.filter(
-                (item) => item.seller?.email === sellerEmail
-                ) || [];
-
-                if (sellerItems.length > 0) {
-                const totalSellerAmount = sellerItems.reduce(
-                    (sum, item) => sum + item.pricePerUnit * item.quantity,
-                    0
-                );
-                const commission = totalSellerAmount * 0.1;
-                const netAmount = totalSellerAmount - commission;
-
-                if (order.paymentStatus === "paid") {
-                    totalEarnings += netAmount;
-                    totalCommissions += commission;
-                    completedPayments++;
-                } else {
-                    pendingPayments++;
+                const sellerEmail = req.params.email;
+                if (!sellerEmail) {
+                    return res
+                        .status(400)
+                        .send({ message: "Email is required" });
                 }
-                }
-            });
 
-            const stats = {
-                totalEarnings: parseFloat(totalEarnings.toFixed(2)),
-                totalCommissions: parseFloat(totalCommissions.toFixed(2)),
-                completedPayments,
-                pendingPayments,
-                totalPayments: completedPayments + pendingPayments,
-            };
+                // Get all orders
+                const allOrders = await ordersCollection.find({}).toArray();
 
-            res.send(stats);
+                let totalEarnings = 0;
+                let totalCommissions = 0;
+                let completedPayments = 0;
+                let pendingPayments = 0;
+
+                allOrders.forEach((order) => {
+                    // Filter items that belong to this seller
+                    const sellerItems =
+                        order.items?.filter(
+                            (item) => item.seller?.email === sellerEmail
+                        ) || [];
+
+                    if (sellerItems.length > 0) {
+                        const totalSellerAmount = sellerItems.reduce(
+                            (sum, item) =>
+                                sum + item.pricePerUnit * item.quantity,
+                            0
+                        );
+                        const commission = totalSellerAmount * 0.1;
+                        const netAmount = totalSellerAmount - commission;
+
+                        if (order.paymentStatus === "paid") {
+                            totalEarnings += netAmount;
+                            totalCommissions += commission;
+                            completedPayments++;
+                        } else {
+                            pendingPayments++;
+                        }
+                    }
+                });
+
+                const stats = {
+                    totalEarnings: parseFloat(totalEarnings.toFixed(2)),
+                    totalCommissions: parseFloat(totalCommissions.toFixed(2)),
+                    completedPayments,
+                    pendingPayments,
+                    totalPayments: completedPayments + pendingPayments,
+                };
+
+                res.send(stats);
             } catch (error) {
-            res.status(500).send({
-                message: "Error fetching seller payment statistics",
-                error: error.message,
-            });
+                res.status(500).send({
+                    message: "Error fetching seller payment statistics",
+                    error: error.message,
+                });
             }
         });
 
