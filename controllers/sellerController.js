@@ -167,6 +167,7 @@ const sellerController = {
                             .toString()
                             .slice(-8)
                             .toUpperCase(),
+                        paymentId: order.paymentIntentId || "N/A",
                         buyerName: order.customerInfo?.fullName || "N/A",
                         buyerEmail: order.customerInfo?.email || "N/A",
                         totalAmount: parseFloat(totalSellerAmount.toFixed(2)),
