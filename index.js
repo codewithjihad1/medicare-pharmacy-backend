@@ -61,6 +61,103 @@ async function run() {
             }
         );
 
+        // Update user role (admin only)
+        app.patch(
+            "/api/users/:id/role",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    const userId = req.params.id;
+                    const { role } = req.body;
+
+                    // Validate role
+                    const validRoles = ["customer", "seller", "admin"];
+                    if (!validRoles.includes(role)) {
+                        return res.status(400).send({
+                            message:
+                                "Invalid role. Must be one of: customer, seller, admin",
+                        });
+                    }
+
+                    const userObjectId = new ObjectId(userId);
+                    const result = await usersCollection.updateOne(
+                        { _id: userObjectId },
+                        {
+                            $set: {
+                                role: role,
+                                updatedAt: new Date().toISOString(),
+                            },
+                        }
+                    );
+
+                    if (result.modifiedCount > 0) {
+                        res.send({
+                            message: `User role updated to ${role} successfully`,
+                            modifiedCount: result.modifiedCount,
+                        });
+                    } else {
+                        res.status(404).send({ message: "User not found" });
+                    }
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error updating user role",
+                        error: error.message,
+                    });
+                }
+            }
+        );
+
+        // Delete user (admin only)
+        app.delete(
+            "/api/users/:id",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    const userId = req.params.id;
+                    const userObjectId = new ObjectId(userId);
+
+                    // Check if user exists
+                    const user = await usersCollection.findOne({
+                        _id: userObjectId,
+                    });
+                    if (!user) {
+                        return res
+                            .status(404)
+                            .send({ message: "User not found" });
+                    }
+
+                    // Prevent admin from deleting themselves
+                    const adminEmail = req.decoded.email;
+                    if (user.email === adminEmail) {
+                        return res.status(403).send({
+                            message: "Cannot delete your own account",
+                        });
+                    }
+
+                    // Delete the user
+                    const result = await usersCollection.deleteOne({
+                        _id: userObjectId,
+                    });
+
+                    if (result.deletedCount > 0) {
+                        res.send({
+                            message: "User deleted successfully",
+                            deletedCount: result.deletedCount,
+                        });
+                    } else {
+                        res.status(404).send({ message: "User not found" });
+                    }
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error deleting user",
+                        error: error.message,
+                    });
+                }
+            }
+        );
+
         // get user by email
         app.get(
             "/api/users/:email",
@@ -1042,7 +1139,205 @@ async function run() {
             }
         );
 
-        // get payment statistics (admin only)
+        // get comprehensive admin statistics
+        app.get(
+            "/api/admin/stats",
+            verifyFirebaseToken,
+            verifyAdmin,
+            async (req, res) => {
+                try {
+                    // Get order statistics
+                    const totalOrders = await ordersCollection.countDocuments(
+                        {}
+                    );
+                    const paidOrders = await ordersCollection.countDocuments({
+                        paymentStatus: "paid",
+                    });
+                    const pendingOrders = await ordersCollection.countDocuments(
+                        {
+                            paymentStatus: { $ne: "paid" },
+                        }
+                    );
+
+                    // Get user statistics
+                    const totalUsers = await usersCollection.countDocuments({});
+                    const adminUsers = await usersCollection.countDocuments({
+                        role: "admin",
+                    });
+                    const sellerUsers = await usersCollection.countDocuments({
+                        role: "seller",
+                    });
+                    const regularUsers = await usersCollection.countDocuments({
+                        $or: [{ role: "customer" }, { role: { $exists: false } }],
+                    });
+
+                    // Get medicine statistics
+                    const totalMedicines =
+                        await medicinesCollection.countDocuments({});
+                    const inStockMedicines =
+                        await medicinesCollection.countDocuments({
+                            inStock: true,
+                        });
+                    const outOfStockMedicines =
+                        await medicinesCollection.countDocuments({
+                            inStock: false,
+                        });
+
+                    // Get advertisement statistics
+                    const totalAds =
+                        await advertiseRequestsCollection.countDocuments({});
+                    const approvedAds =
+                        await advertiseRequestsCollection.countDocuments({
+                            status: "approved",
+                        });
+                    const pendingAds =
+                        await advertiseRequestsCollection.countDocuments({
+                            status: "pending",
+                        });
+
+                    // Calculate revenue statistics
+                    const totalRevenue = await ordersCollection
+                        .aggregate([
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const paidRevenue = await ordersCollection
+                        .aggregate([
+                            { $match: { paymentStatus: "paid" } },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const pendingRevenue = await ordersCollection
+                        .aggregate([
+                            { $match: { paymentStatus: { $ne: "paid" } } },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    // Get recent activities (last 5 orders)
+                    const recentOrders = await ordersCollection
+                        .find({})
+                        .sort({ createdAt: -1 })
+                        .limit(5)
+                        .toArray();
+
+                    // Get growth statistics (compared to last month)
+                    const lastMonth = new Date();
+                    lastMonth.setMonth(lastMonth.getMonth() - 1);
+                    const lastMonthISO = lastMonth.toISOString();
+
+                    const currentMonthOrders =
+                        await ordersCollection.countDocuments({
+                            createdAt: { $gte: lastMonthISO },
+                        });
+
+                    const currentMonthRevenue = await ordersCollection
+                        .aggregate([
+                            {
+                                $match: {
+                                    createdAt: { $gte: lastMonthISO },
+                                    paymentStatus: "paid",
+                                },
+                            },
+                            {
+                                $group: {
+                                    _id: null,
+                                    total: { $sum: "$orderTotal" },
+                                },
+                            },
+                        ])
+                        .toArray();
+
+                    const stats = {
+                        // Revenue Statistics
+                        totalRevenue: totalRevenue[0]?.total || 0,
+                        paidTotal: paidRevenue[0]?.total || 0,
+                        pendingTotal: pendingRevenue[0]?.total || 0,
+
+                        // Order Statistics
+                        totalOrders,
+                        completedOrders: paidOrders,
+                        pendingOrders,
+
+                        // User Statistics
+                        totalUsers,
+                        adminUsers,
+                        sellerUsers,
+                        regularUsers,
+
+                        // Medicine Statistics
+                        totalMedicines,
+                        inStockMedicines,
+                        outOfStockMedicines,
+
+                        // Advertisement Statistics
+                        totalAds,
+                        approvedAds,
+                        pendingAds,
+
+                        // Growth Statistics
+                        currentMonthOrders,
+                        currentMonthRevenue: currentMonthRevenue[0]?.total || 0,
+
+                        // Success Rate
+                        orderSuccessRate:
+                            totalOrders > 0
+                                ? ((paidOrders / totalOrders) * 100).toFixed(1)
+                                : 0,
+                        medicineStockRate:
+                            totalMedicines > 0
+                                ? (
+                                      (inStockMedicines / totalMedicines) *
+                                      100
+                                  ).toFixed(1)
+                                : 0,
+
+                        // Recent Activities
+                        recentActivities: recentOrders
+                            .map((order) => ({
+                                type: "order",
+                                message: `New ${
+                                    order.paymentStatus === "paid"
+                                        ? "payment received"
+                                        : "order placed"
+                                }: $${order.orderTotal?.toFixed(2) || "0.00"}`,
+                                amount: order.orderTotal,
+                                status: order.paymentStatus,
+                                date: order.createdAt,
+                                customer:
+                                    order.customerInfo?.fullName || "Anonymous",
+                            }))
+                            .slice(0, 3),
+                    };
+
+                    res.send(stats);
+                } catch (error) {
+                    res.status(500).send({
+                        message: "Error fetching admin statistics",
+                        error: error.message,
+                    });
+                }
+            }
+        );
+
+        // get payment statistics (admin only) - Legacy endpoint for backward compatibility
         app.get(
             "/api/admin/payment-stats",
             verifyFirebaseToken,
@@ -1412,8 +1707,8 @@ async function run() {
             try {
                 const query = {
                     status: "approved",
-                    // startDate: { $lte: new Date().toISOString().split("T")[0] },
-                    // endDate: { $gte: new Date().toISOString().split("T")[0] },
+                    startDate: { $lte: new Date().toISOString().split("T")[0] },
+                    endDate: { $gte: new Date().toISOString().split("T")[0] },
                 };
 
                 const activeAds = await advertiseRequestsCollection
@@ -1476,7 +1771,10 @@ async function run() {
                                                         0,
                                                         {
                                                             $subtract: [
-                                                                { $strLenCP: "$$str" },
+                                                                {
+                                                                    $strLenCP:
+                                                                        "$$str",
+                                                                },
                                                                 8,
                                                             ],
                                                         },
