@@ -20,6 +20,23 @@ const miscController = {
         }
     },
 
+    // Get health blog by ID
+    getHealthBlogById: async (req, res) => {
+        const { id } = req.params;
+        try {
+            const blog = await healthBlogsCollection.findOne({ _id: id });
+            if (!blog) {
+                return res.status(404).send({ message: "Blog not found" });
+            }
+            res.send(blog);
+        } catch (error) {
+            res.status(500).send({
+                message: "Error fetching health blog",
+                error: error.message,
+            });
+        }
+    },
+
     // Get companies info
     getCompanies: async (req, res) => {
         try {
