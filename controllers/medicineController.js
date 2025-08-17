@@ -1,4 +1,5 @@
-const { medicinesCollection, ObjectId } = require("../mongodb/mongodb");
+const { medicinesCollection } = require("../mongodb/mongodb");
+const { ObjectId } = require("mongodb");
 
 const medicineController = {
     // Get all medicines
@@ -9,6 +10,25 @@ const medicineController = {
         } catch (error) {
             res.status(500).send({
                 message: "Error fetching medicines",
+                error: error.message,
+            });
+        }
+    },
+
+    // get single medicine by id
+    getMedicineById: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const result = await medicinesCollection.findOne({
+                _id: ObjectId.createFromHexString(id),
+            });
+            if (!result) {
+                return res.status(404).send({ message: "Medicine not found" });
+            }
+            res.send(result);
+        } catch (error) {
+            res.status(500).send({
+                message: "Error fetching medicine",
                 error: error.message,
             });
         }
@@ -48,7 +68,7 @@ const medicineController = {
             const id = req.params.id;
             const updatedData = req.body;
             delete updatedData._id; // Remove _id to avoid conflict
-            const medicineID = new ObjectId(id);
+            const medicineID = ObjectId.createFromHexString(id);
 
             const result = await medicinesCollection.updateOne(
                 { _id: medicineID },

@@ -2,6 +2,7 @@ const {
     healthBlogsCollection,
     companiesCollection,
 } = require("../mongodb/mongodb");
+const { ObjectId } = require("mongodb");
 
 const miscController = {
     // Get health blogs
@@ -24,7 +25,9 @@ const miscController = {
     getHealthBlogById: async (req, res) => {
         const { id } = req.params;
         try {
-            const blog = await healthBlogsCollection.findOne({ _id: id });
+            const blog = await healthBlogsCollection.findOne({
+                _id: new ObjectId(id),
+            });
             if (!blog) {
                 return res.status(404).send({ message: "Blog not found" });
             }

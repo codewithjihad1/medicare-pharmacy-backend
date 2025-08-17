@@ -4,6 +4,7 @@ const medicineController = require("../controllers/medicineController");
 
 // Medicine CRUD routes
 router.get("/", medicineController.getAllMedicines);
+router.get("/:id", medicineController.getMedicineById);
 router.post("/", medicineController.createMedicine);
 router.put("/:id", medicineController.updateMedicine);
 router.delete("/:id", medicineController.deleteMedicine);
